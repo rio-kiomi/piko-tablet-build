@@ -1,0 +1,165 @@
+diff --git a/ui/CLAUDE.md b/ui/CLAUDE.md
+index 8dd0f03..bdcb3a4 100644
+--- a/ui/CLAUDE.md
++++ b/ui/CLAUDE.md
+@@ -110,8 +110,9 @@ TopAppBar 先量动作、标题拿剩下的，桌面窄窗口加上窗口按钮
+   不要再做底部的状态条、把手或 chip：收起就是同一个 sheet 停在低的一档。也不要做汇总几样后台工作的底部条：
+   M3 没有这种组件，Snackbar 一次一条、不能常驻多项。
+   命令栏右端曾有一个「收着的东西」竖排菜单，看着像操作、实为导航，已删，不要再加回。
+-- 右侧那一栏只在桌面，放信息流或添加链接，同一时刻只放一样，不做标签切换（用户定的：两者不同时出现）；移动端的信息流一律全屏，
+-  平板也是。两者的位置、宽度与拖宽是同一份（`PikoMainScaffold` 的 `feedFrame`，宽度存在 `clipPanelFlow`）。
++- 桌面右栏放信息流或添加链接，同一时刻只放一样，不做标签切换。此平板定制版允许 Android 横屏窗口在高度至少 480dp、
++  内容区放得下双栏时停靠信息流（`adaptive/FeedLayout.kt`）；竖屏、窄窗口与手动锁定横屏播放时仍全屏。移动端的导航、触屏操作与添加链接面板不变，
++  分栏刷信息流时打开其他任务仍经 `TaskSlot` 确认结束信息流。两者的位置、宽度与拖宽是同一份（`PikoMainScaffold` 的 `feedFrame`，宽度存在 `clipPanelFlow`）。
+   添加链接挤得走信息流，信息流挤不走添加链接：添加链接是有未完成工作的任务，信息流只是浏览。开着信息流时打开添加链接，
+   信息流挂起让位（与离开文件夹同一种挂起，见 `screens/clips/CLAUDE.md`），右栏换成添加链接；添加链接关掉后信息流不自动回来，
+   命令栏「信息流」按钮上的小圆点提示它还在，点了才继续，右栏里的东西不自己跳回来。添加链接停在右栏时「信息流」按钮与命令面板里的
+diff --git a/ui/src/commonMain/kotlin/dev/piko/ui/PikoMainScaffold.kt b/ui/src/commonMain/kotlin/dev/piko/ui/PikoMainScaffold.kt
+index 068b8e0..0c679e2 100644
+--- a/ui/src/commonMain/kotlin/dev/piko/ui/PikoMainScaffold.kt
++++ b/ui/src/commonMain/kotlin/dev/piko/ui/PikoMainScaffold.kt
+@@ -148,6 +148,7 @@ import dev.piko.download.DownloadStatus
+ import dev.piko.shared.data.PikoPathBreadcrumb
+ import dev.piko.ui.adaptive.WidthClass
+ import dev.piko.ui.adaptive.currentWidthClass
++import dev.piko.ui.adaptive.feedPanelFits
+ import dev.piko.ui.adaptive.isDesktopLayout
+ import dev.piko.ui.adaptive.isHeightCompact
+ import dev.piko.ui.components.SidePanelLayout
+@@ -314,7 +315,9 @@ fun PikoMainScaffold(
+     // 移动端是底部导航栏，宽了换成 Rail，三项与底栏相同，见 FormFactor。
+     // 侧边栏在返回栈外面，打开设置、我的分享时不被盖住
+     val desktop = isDesktopLayout()
+-    val windowWidth = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() }
++    val windowSize = LocalWindowInfo.current.containerSize
++    val windowWidth = with(LocalDensity.current) { windowSize.width.toDp() }
++    val windowHeight = with(LocalDensity.current) { windowSize.height.toDp() }
+     val sidebarWindow = desktop
+     // 只用于移动端横握时收起系统栏
+     val heightCompact = isHeightCompact()
+@@ -505,8 +508,9 @@ fun PikoMainScaffold(
+     val initialPanelPrefs = remember { runBlocking { preferences.clipPanelFlow.first() } }
+     val panelPrefs by preferences.clipPanelFlow.collectAsStateWithLifecycle(initialPanelPrefs)
+     val contentWidth = with(density) { contentSize.width.toDp() }.takeIf { contentSize != IntSize.Zero }
+-    // 右栏只在桌面：移动端的信息流一律全屏，平板横握也是，与手机同一套
+-    val panelFits = contentWidth != null && desktop && sidePanelFits(contentWidth, ClipPanelMinWidth)
++    // 添加链接仍只在桌面停靠；横屏平板仅让信息流进入右栏，不切换整套交互模型。
++    val addLinkPanelFits = contentWidth != null && desktop && sidePanelFits(contentWidth, ClipPanelMinWidth)
++    val panelFits = feedPanelFits(desktop, windowWidth, windowHeight, contentWidth, ClipPanelMinWidth, clipFeedSession.landscape)
+     // null 是还没量出内容区宽度。上次开着侧栏退出的，只在这回仍放得下侧栏时照样打开；
+     // 放不下就是全屏形态，窄窗口一启动就开始播不是谁想要的
+     var feedShownState by rememberSaveable { mutableStateOf<Boolean?>(null) }
+@@ -549,7 +553,7 @@ fun PikoMainScaffold(
+     // suspendFeed 那一处），信息流挤不走添加链接（「信息流」入口置灰）：添加链接是有未完成工作的任务，信息流只是浏览。
+     // 添加链接收成右下角的浮动卡片后右栏就空出来了，信息流照常打开
+     val instantSession = services.instantSession
+-    val addLinkDocked = panelFits && instantSession.state != null && instantSession.isSheetOpen
++    val addLinkDocked = addLinkPanelFits && instantSession.state != null && instantSession.isSheetOpen
+     val feedBlockedReason = if (addLinkDocked) "添加链接进行中，关闭后可打开信息流" else null
+     val feedInPanel = feedOnFilesTab && panelFits && !addLinkDocked
+     val feedFullScreen = feedOnFilesTab && !panelFits
+@@ -667,7 +671,8 @@ fun PikoMainScaffold(
+         taskSlot.occupants = listOf(
+             TaskSlot.Occupant(TaskSlot.Task.DUPLICATES, "查找重复", "扫描结果不会保存。", { services.duplicateSession.state != null }, services.duplicateSession::end),
+             TaskSlot.Occupant(TaskSlot.Task.ADD_LINK, "添加链接", "尚未保存的链接将被丢弃。", { services.instantSession.state != null }, services.instantSession::end),
+-            TaskSlot.Occupant(TaskSlot.Task.FEED, "信息流", "再次打开时将从头开始。", { feedShownState == true && feedDetour != null }) { latestSetFeedShown(false) },
++            // 平板分栏时能直接操作文件区，打开其他任务仍走移动端原有的结束确认。
++            TaskSlot.Occupant(TaskSlot.Task.FEED, "信息流", "再次打开时将从头开始。", { feedShownState == true && (feedDetour != null || feedInPanel) }) { latestSetFeedShown(false) },
+         )
+     }
+     // 窄窗口里人往查找重复所在的那棵树外走（返回、面包屑、从别处跳进网盘、快速访问、「我的」里的库、命令面板）之前先确认，
+diff --git a/app/src/debug/res/values/strings.xml b/app/src/debug/res/values/strings.xml
+new file mode 100644
+--- /dev/null
++++ b/app/src/debug/res/values/strings.xml
+@@ -0,0 +1,3 @@
++<resources>
++    <string name="app_name">Piko 平板</string>
++</resources>
+diff --git a/ui/src/commonMain/kotlin/dev/piko/ui/adaptive/FeedLayout.kt b/ui/src/commonMain/kotlin/dev/piko/ui/adaptive/FeedLayout.kt
+new file mode 100644
+--- /dev/null
++++ b/ui/src/commonMain/kotlin/dev/piko/ui/adaptive/FeedLayout.kt
+@@ -0,0 +1,19 @@
++package dev.piko.ui.adaptive
++
++import androidx.compose.ui.unit.Dp
++import androidx.compose.ui.unit.dp
++import dev.piko.ui.components.sidePanelFits
++
++/** 只决定信息流的位置，平板仍使用移动端的导航、触屏操作与任务面板。 */
++internal fun feedPanelFits(
++    desktop: Boolean,
++    windowWidth: Dp,
++    windowHeight: Dp,
++    contentWidth: Dp?,
++    panelMinWidth: Dp,
++    landscapeLocked: Boolean = false,
++): Boolean {
++    if (contentWidth == null || !sidePanelFits(contentWidth, panelMinWidth)) return false
++    // 手动进入横屏的全屏信息流保持全屏，避免停靠时释放方向锁又触发一次布局切换。
++    return desktop || (!landscapeLocked && windowWidth > windowHeight && windowHeight >= 480.dp)
++}
+diff --git a/ui/src/desktopTest/kotlin/dev/piko/ui/adaptive/FeedLayoutTest.kt b/ui/src/desktopTest/kotlin/dev/piko/ui/adaptive/FeedLayoutTest.kt
+new file mode 100644
+--- /dev/null
++++ b/ui/src/desktopTest/kotlin/dev/piko/ui/adaptive/FeedLayoutTest.kt
+@@ -0,0 +1,58 @@
++package dev.piko.ui.adaptive
++
++import androidx.compose.ui.unit.dp
++import kotlin.test.Test
++import kotlin.test.assertFalse
++import kotlin.test.assertTrue
++
++class FeedLayoutTest {
++    @Test
++    fun `landscape tablet can browse files beside the feed`() {
++        assertTrue(feedPanelFits(false, 1280.dp, 800.dp, 1184.dp, 360.dp))
++    }
++
++    @Test
++    fun `portrait and square mobile windows keep the full screen feed`() {
++        assertFalse(feedPanelFits(false, 1000.dp, 1280.dp, 904.dp, 360.dp))
++        assertFalse(feedPanelFits(false, 1000.dp, 1000.dp, 904.dp, 360.dp))
++    }
++
++    @Test
++    fun `short landscape phone keeps the full screen feed`() {
++        assertFalse(feedPanelFits(false, 1000.dp, 479.dp, 904.dp, 360.dp))
++        assertTrue(feedPanelFits(false, 1000.dp, 480.dp, 904.dp, 360.dp))
++    }
++
++    @Test
++    fun `split screen uses measured content width after navigation`() {
++        assertFalse(feedPanelFits(false, 960.dp, 600.dp, 839.dp, 360.dp))
++        assertTrue(feedPanelFits(false, 960.dp, 600.dp, 840.dp, 360.dp))
++    }
++
++    @Test
++    fun `unmeasured content never opens a side panel`() {
++        assertFalse(feedPanelFits(false, 1280.dp, 800.dp, null, 360.dp))
++        assertFalse(feedPanelFits(true, 1280.dp, 800.dp, null, 360.dp))
++    }
++
++    @Test
++    fun `explicit mobile landscape player remains full screen`() {
++        assertFalse(feedPanelFits(false, 1280.dp, 800.dp, 1184.dp, 360.dp, landscapeLocked = true))
++        assertTrue(feedPanelFits(false, 1280.dp, 800.dp, 1184.dp, 360.dp, landscapeLocked = false))
++    }
++
++    @Test
++    fun `desktop still docks in portrait or short windows when space permits`() {
++        assertTrue(feedPanelFits(true, 1000.dp, 1280.dp, 904.dp, 360.dp))
++        assertTrue(feedPanelFits(true, 1000.dp, 400.dp, 904.dp, 360.dp))
++        assertFalse(feedPanelFits(true, 960.dp, 600.dp, 839.dp, 360.dp))
++    }
++
++    @Test
++    fun `folding and rotating change presentation without changing platform`() {
++        assertTrue(feedPanelFits(false, 1200.dp, 800.dp, 1104.dp, 360.dp))
++        assertFalse(feedPanelFits(false, 800.dp, 1200.dp, 704.dp, 360.dp))
++        assertFalse(feedPanelFits(false, 600.dp, 800.dp, 504.dp, 360.dp))
++        assertTrue(feedPanelFits(false, 1200.dp, 800.dp, 1104.dp, 360.dp))
++    }
++}
