@@ -1,0 +1,90 @@
+name: Build Piko tablet APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PIKO_VERSION_NAME: 1.2.0-tablet.1
+      PIKO_VERSION_CODE: '1002001'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: builder
+
+      - uses: actions/checkout@v5
+        with:
+          repository: NihilDigit/piko
+          ref: 1a3e7916e2a8f43f11e829e2911547e2790b1205
+          path: piko
+
+      - name: Apply tablet layout patch
+        working-directory: piko
+        run: |
+          git apply --check ../builder/tablet-feed.patch
+          git apply ../builder/tablet-feed.patch
+          git diff --check
+          tar --exclude=.git -czf ../piko-tablet-source.tar.gz .
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: temurin
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Test shared logic and UI rules and compile desktop
+        working-directory: piko
+        run: ./gradlew :shared:desktopTest :ui:desktopTest :desktopApp:compileKotlinDesktop --no-daemon --stacktrace
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      - name: Test and build Android APK
+        working-directory: piko
+        run: ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Verify and collect arm64 APK
+        working-directory: piko
+        run: |
+          mkdir -p ../dist
+          apk=app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
+          test -s "$apk"
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          "$build_tools/apksigner" verify --verbose "$apk" > ../dist/signature-verification.txt
+          "$build_tools/aapt" dump badging "$apk" > ../dist/apk-metadata.txt
+          grep -q "package: name='dev.piko.debug'" ../dist/apk-metadata.txt
+          grep -q "native-code: 'arm64-v8a'" ../dist/apk-metadata.txt
+          cp "$apk" ../dist/piko-1.2.0-tablet.1-arm64-v8a.apk
+          cp ../piko-tablet-source.tar.gz ../dist/
+          cp ../builder/README.md ../dist/
+          cp LICENSE ../dist/
+          cd ../dist
+          sha256sum piko-1.2.0-tablet.1-arm64-v8a.apk piko-tablet-source.tar.gz > SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: piko-1.2.0-tablet.1-arm64-v8a
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Save test reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-reports
+          path: |
+            piko/shared/build/reports/tests/
+            piko/ui/build/reports/tests/
+            piko/app/build/reports/tests/
+          if-no-files-found: ignore
+          retention-days: 30
